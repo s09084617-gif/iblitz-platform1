@@ -2,10 +2,23 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
 from .database import get_db
-from .models import Assessment, Episode, Outcome, User, Workout
+from .models import (
+    Assessment,
+    Episode,
+    Outcome,
+    Program,
+    ProgramExercise,
+    RecommendationRule,
+    Restriction,
+    User,
+    Workout,
+    ClassificationRule,
+    ProgramRule,
+)
 from .schemas import (
     EpisodeResponse,
     GenerateEpisodeRequest,
@@ -17,26 +30,35 @@ from .schemas import (
 router = APIRouter()
 
 
-def determine_classification(pbf: float, smm: str) -> str:
+def get_classification(db: Session, pbf: float, smm: str) -> str:
     smm_key = smm.lower().strip()
-    if pbf >= 30 and smm_key == "low":
-        return "obese_low_muscle"
-    if pbf >= 30:
-        return "obese"
-    if pbf >= 25 and smm_key == "low":
-        return "overweight_low_muscle"
-    if pbf >= 25:
-        return "overweight"
-    if smm_key == "low":
-        return "normal_low_muscle"
+    rule = (
+        db.query(ClassificationRule)
+        .filter(ClassificationRule.active.is_(True))
+        .filter(ClassificationRule.pbf_min <= pbf)
+        .filter(or_(ClassificationRule.pbf_max.is_(None), pbf < ClassificationRule.pbf_max))
+        .filter(or_(ClassificationRule.smm_key.is_(None), ClassificationRule.smm_key == smm_key))
+        .order_by(ClassificationRule.priority.desc())
+        .first()
+    )
+    if rule:
+        return rule.classification
     return "normal"
 
 
-def determine_recommendation(classification: str, goal: str) -> str:
+def get_recommendation(db: Session, classification: str, goal: str) -> str:
     goal_key = goal.lower().strip()
+    rule = (
+        db.query(RecommendationRule)
+        .filter(RecommendationRule.active.is_(True))
+        .filter(RecommendationRule.classification == classification)
+        .filter(or_(RecommendationRule.goal_key.is_(None), RecommendationRule.goal_key == goal_key))
+        .order_by(RecommendationRule.priority.desc())
+        .first()
+    )
+    if rule:
+        return rule.recommendation
     if goal_key == "fat_loss":
-        if "low_muscle" in classification:
-            return "fat_loss_muscle_preservation"
         return "fat_loss"
     if goal_key == "muscle_gain":
         return "muscle_gain"
@@ -45,8 +67,18 @@ def determine_recommendation(classification: str, goal: str) -> str:
     return "general_fitness"
 
 
-def determine_program(classification: str, restriction: Optional[str]) -> str:
-    restriction_key = restriction.upper().strip() if restriction else ""
+def get_program(db: Session, classification: str, restriction: Optional[str]) -> str:
+    restriction_key = restriction.upper().strip() if restriction else None
+    rule = (
+        db.query(ProgramRule)
+        .filter(ProgramRule.active.is_(True))
+        .filter(ProgramRule.classification == classification)
+        .filter(or_(ProgramRule.restriction_code.is_(None), ProgramRule.restriction_code == restriction_key))
+        .order_by(ProgramRule.priority.desc())
+        .first()
+    )
+    if rule:
+        return rule.program_code
     if restriction_key == "KNEE_PAIN":
         return "3_day_full_body"
     if "low_muscle" in classification:
@@ -132,43 +164,51 @@ def create_outcome(db: Session, episode: Episode, classification: str, recommend
     return outcome
 
 
-def generate_workout_details(program: str, goal: str, restriction: Optional[str]) -> dict:
+def generate_workout_details(db: Session, program: str, goal: str, restriction: Optional[str]) -> dict:
     program_key = program.lower().strip()
-    restriction_key = restriction.upper().strip() if restriction else ""
+    restriction_key = restriction.upper().strip() if restriction else None
+    program_obj = db.query(Program).filter(Program.code == program_key).first()
+    substitution_map = {}
 
-    if "3_day_full_body" in program_key:
-        exercises = [
-            {"name": "Squat", "sets": 3, "reps": "8-12"},
-            {"name": "Bench Press", "sets": 3, "reps": "8-12"},
-            {"name": "Bent-over Row", "sets": 3, "reps": "8-12"},
-            {"name": "Shoulder Press", "sets": 3, "reps": "8-12"},
-            {"name": "Plank", "sets": 3, "duration": "30s"},
-        ]
-    elif "4_day_split" in program_key:
-        exercises = [
-            {"day": "Push", "movements": [
-                {"name": "Bench Press", "sets": 4, "reps": "6-10"},
-                {"name": "Overhead Press", "sets": 3, "reps": "8-12"},
-                {"name": "Triceps Dip", "sets": 3, "reps": "10-15"},
-            ]},
-            {"day": "Pull", "movements": [
-                {"name": "Deadlift", "sets": 3, "reps": "5-8"},
-                {"name": "Pull-up", "sets": 3, "reps": "6-12"},
-                {"name": "Face Pull", "sets": 3, "reps": "12-15"},
-            ]},
-            {"day": "Legs", "movements": [
-                {"name": "Front Squat", "sets": 3, "reps": "6-10"},
-                {"name": "Romanian Deadlift", "sets": 3, "reps": "8-12"},
-                {"name": "Lunges", "sets": 3, "reps": "10-12"},
-            ]},
-            {"day": "Upper", "movements": [
-                {"name": "Incline Bench Press", "sets": 3, "reps": "8-12"},
-                {"name": "Barbell Row", "sets": 3, "reps": "8-12"},
-                {"name": "Lat Pulldown", "sets": 3, "reps": "10-15"},
-            ]},
-        ]
-    else:
-        exercises = [
+    if restriction_key:
+        restriction_obj = db.query(Restriction).filter(Restriction.code == restriction_key).first()
+        if restriction_obj:
+            for substitution in restriction_obj.substitutions:
+                substitution_map[substitution.exercise_id] = substitution.substitute_exercise
+
+    workouts = []
+    if program_obj:
+        mappings = (
+            db.query(ProgramExercise)
+            .options(joinedload(ProgramExercise.exercise))
+            .filter(ProgramExercise.program_id == program_obj.id)
+            .order_by(ProgramExercise.day, ProgramExercise.sequence)
+            .all()
+        )
+
+        grouped = {}
+        for mapping in mappings:
+            exercise = substitution_map.get(mapping.exercise_id, mapping.exercise)
+            movement = {
+                "name": exercise.name,
+                "sets": mapping.sets,
+                "reps": mapping.reps,
+            }
+            if mapping.duration:
+                movement["duration"] = mapping.duration
+            if mapping.notes:
+                movement["notes"] = mapping.notes
+
+            if mapping.day:
+                grouped.setdefault(mapping.day, []).append(movement)
+            else:
+                workouts.append(movement)
+
+        if grouped:
+            workouts = [{"day": day, "movements": movements} for day, movements in grouped.items()]
+
+    if not workouts:
+        workouts = [
             {"name": "Goblet Squat", "sets": 3, "reps": "10-15"},
             {"name": "Push-up", "sets": 3, "reps": "12-20"},
             {"name": "Dumbbell Row", "sets": 3, "reps": "10-15"},
@@ -176,15 +216,11 @@ def generate_workout_details(program: str, goal: str, restriction: Optional[str]
             {"name": "Plank", "sets": 3, "duration": "30s"},
         ]
 
-    if restriction_key == "KNEE_PAIN":
-        exercises.append({"name": "Glute Bridge", "sets": 3, "reps": "12-15"})
-        exercises = [e for e in exercises if e["name"] not in ["Lunge", "Squat", "Front Squat"]]
-
     return {
         "program": program,
         "goal": goal,
         "restriction": restriction,
-        "workouts": exercises,
+        "workouts": workouts,
     }
 
 
@@ -217,7 +253,7 @@ async def generate_workout(request: GenerateWorkoutRequest, db: Session = Depend
         if not episode:
             raise HTTPException(status_code=404, detail="Episode not found")
 
-    details = generate_workout_details(request.program, request.goal, request.restriction)
+    details = generate_workout_details(db, request.program, request.goal, request.restriction)
     workout = create_workout(db, user, episode, request.program, details)
 
     db.commit()
@@ -238,9 +274,9 @@ async def generate_workout(request: GenerateWorkoutRequest, db: Session = Depend
     summary="Generate an episode recommendation",
 )
 async def generate_episode(request: GenerateEpisodeRequest, db: Session = Depends(get_db)):
-    classification = determine_classification(request.pbf, request.smm)
-    recommendation = determine_recommendation(classification, request.goal)
-    program = determine_program(classification, request.restriction)
+    classification = get_classification(db, request.pbf, request.smm)
+    recommendation = get_recommendation(db, classification, request.goal)
+    program = get_program(db, classification, request.restriction)
 
     user = get_or_create_user(db, request.user_id, request.username)
     assessment_title = request.assessment_title or f"{request.goal.capitalize()} Assessment"

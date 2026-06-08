@@ -89,3 +89,139 @@ class Workout(Base):
 
     episode = relationship("Episode")
     user = relationship("User")
+
+
+class Program(Base):
+    __tablename__ = "programs"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+    code = Column(Text, unique=True, nullable=False)
+    name = Column(Text, nullable=False)
+    description = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    exercise_mappings = relationship("ProgramExercise", back_populates="program", cascade="all, delete-orphan")
+
+
+class Exercise(Base):
+    __tablename__ = "exercises"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+    code = Column(Text, unique=True, nullable=False)
+    name = Column(Text, nullable=False)
+    category = Column(Text)
+    equipment = Column(Text)
+    primary_muscle = Column(Text)
+    secondary_muscle = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    substitutions = relationship(
+        "ExerciseSubstitution",
+        foreign_keys="[ExerciseSubstitution.exercise_id]",
+        back_populates="exercise",
+        cascade="all, delete-orphan",
+    )
+    substitution_targets = relationship(
+        "ExerciseSubstitution",
+        foreign_keys="[ExerciseSubstitution.substitute_exercise_id]",
+        back_populates="substitute_exercise",
+        cascade="all, delete-orphan",
+    )
+
+
+class ProgramExercise(Base):
+    __tablename__ = "program_exercise_mappings"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+    program_id = Column(BigInteger, ForeignKey("programs.id"), nullable=False)
+    exercise_id = Column(BigInteger, ForeignKey("exercises.id"), nullable=False)
+    day = Column(Text)
+    sequence = Column(Integer, nullable=False, default=1)
+    sets = Column(Integer)
+    reps = Column(Text)
+    duration = Column(Text)
+    notes = Column(JSON)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    program = relationship("Program", back_populates="exercise_mappings")
+    exercise = relationship("Exercise")
+
+
+class Restriction(Base):
+    __tablename__ = "restrictions"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+    code = Column(Text, unique=True, nullable=False)
+    name = Column(Text, nullable=False)
+    description = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    substitutions = relationship("ExerciseSubstitution", back_populates="restriction", cascade="all, delete-orphan")
+
+
+class ExerciseSubstitution(Base):
+    __tablename__ = "exercise_substitutions"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+    restriction_id = Column(BigInteger, ForeignKey("restrictions.id"), nullable=False)
+    exercise_id = Column(BigInteger, ForeignKey("exercises.id"), nullable=False)
+    substitute_exercise_id = Column(BigInteger, ForeignKey("exercises.id"), nullable=False)
+    reason = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    restriction = relationship("Restriction", back_populates="substitutions")
+    exercise = relationship(
+        "Exercise",
+        foreign_keys="[ExerciseSubstitution.exercise_id]",
+        back_populates="substitutions",
+    )
+    substitute_exercise = relationship(
+        "Exercise",
+        foreign_keys="[ExerciseSubstitution.substitute_exercise_id]",
+        back_populates="substitution_targets",
+    )
+
+
+class ClassificationRule(Base):
+    __tablename__ = "classification_rules"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+    pbf_min = Column(Numeric, nullable=False, default=0)
+    pbf_max = Column(Numeric)
+    smm_key = Column(Text)
+    classification = Column(Text, nullable=False)
+    priority = Column(Integer, nullable=False, default=0)
+    active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class RecommendationRule(Base):
+    __tablename__ = "recommendation_rules"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+    classification = Column(Text, nullable=False)
+    goal_key = Column(Text)
+    recommendation = Column(Text, nullable=False)
+    priority = Column(Integer, nullable=False, default=0)
+    active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class ProgramRule(Base):
+    __tablename__ = "program_rules"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+    classification = Column(Text, nullable=False)
+    restriction_code = Column(Text)
+    program_code = Column(Text, nullable=False)
+    priority = Column(Integer, nullable=False, default=0)
+    active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
