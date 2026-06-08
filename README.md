@@ -11,6 +11,7 @@ A backend for the iblitz recommendation and workout system.
 - `backend/schemas.py` — Pydantic request/response schemas
 - `backend/schema_v3.sql` — PostgreSQL schema bootstrap SQL
 - `backend/setup_ec2_postgres.sh` — Docker-based PostgreSQL setup script
+- `backend/seed_reference_data.sh` — seed program, exercise, restriction, and rule reference data
 - `backend/reset_and_seed_canonical_assessments.sh` — reset and reseed canonical test data
 - `backend/seed_canonical_assessments.sh` — create 10 test users, episodes, outcomes
 - `backend/run_dev.sh` — local FastAPI startup helper
