@@ -1,0 +1,26 @@
+openapi: 3.1.0
+info:
+  title: IBLITZ API
+  version: 1.0.0
+paths:
+  /assessments:
+    post:
+      summary: Create assessment
+  /recommendations:
+    post:
+      summary: Generate recommendation
+  /programs/{id}:
+    get:
+      summary: Get program
+  /nutrition-plans/{id}:
+    get:
+      summary: Get nutrition plan
+  /progress-logs:
+    post:
+      summary: Create progress log
+  /outcomes:
+    post:
+      summary: Create outcome
+  /analytics/effectiveness:
+    get:
+      summary: Recommendation effectiveness analytics
