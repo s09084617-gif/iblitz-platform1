@@ -5,12 +5,27 @@ CONTAINER=iblitz-postgres
 DB_USER=iblitz
 DB_NAME=iblitz
 
+PYTHON_EXEC="$(command -v python3 || true)"
+if [ -x "./.venv/bin/python" ]; then
+  PYTHON_EXEC="./.venv/bin/python"
+fi
+if [ -z "$PYTHON_EXEC" ]; then
+  echo "Python 3 is required to generate secure password hashes." >&2
+  exit 1
+fi
+HASHED_PASSWORD="$($PYTHON_EXEC - <<'PY'
+from passlib.context import CryptContext
+pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
+print(pwd.hash("password"))
+PY
+)"
+
 cat <<'SQL' | sudo docker exec -i "$CONTAINER" psql -U "$DB_USER" -d "$DB_NAME"
 BEGIN;
 
 WITH new_users AS (
   INSERT INTO users (username, email, hashed_password)
-  SELECT 'testuser' || i, 'testuser' || i || '@example.com', 'password'
+  SELECT 'testuser' || i, 'testuser' || i || '@example.com', '$HASHED_PASSWORD'
   FROM generate_series(1, 10) AS s(i)
   RETURNING id, username
 ),

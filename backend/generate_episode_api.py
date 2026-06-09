@@ -1,14 +1,17 @@
+import secrets
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
 
+from .auth import get_password_hash
 from .database import get_db
 from .models import (
     Assessment,
     Episode,
+    EpisodeFailure,
     Outcome,
     Program,
     ProgramExercise,
@@ -19,6 +22,8 @@ from .models import (
     ClassificationRule,
     ProgramRule,
 )
+
+UNSUPPORTED_CASE = "unsupported_case"
 from .schemas import (
     EpisodeResponse,
     GenerateEpisodeRequest,
@@ -28,6 +33,13 @@ from .schemas import (
 )
 
 router = APIRouter()
+
+
+class UnsupportedCase(Exception):
+    def __init__(self, stage: str, reason: str, details: Optional[dict] = None):
+        self.stage = stage
+        self.reason = reason
+        self.details = details or {}
 
 
 def get_classification(db: Session, pbf: float, smm: str) -> str:
@@ -43,7 +55,11 @@ def get_classification(db: Session, pbf: float, smm: str) -> str:
     )
     if rule:
         return rule.classification
-    return "normal"
+    raise UnsupportedCase(
+        stage="classification",
+        reason="classification_rule_missing",
+        details={"pbf": pbf, "smm": smm},
+    )
 
 
 def get_recommendation(db: Session, classification: str, goal: str) -> str:
@@ -58,13 +74,11 @@ def get_recommendation(db: Session, classification: str, goal: str) -> str:
     )
     if rule:
         return rule.recommendation
-    if goal_key == "fat_loss":
-        return "fat_loss"
-    if goal_key == "muscle_gain":
-        return "muscle_gain"
-    if goal_key == "maintenance":
-        return "maintenance"
-    return "general_fitness"
+    raise UnsupportedCase(
+        stage="recommendation",
+        reason="recommendation_rule_missing",
+        details={"classification": classification, "goal": goal},
+    )
 
 
 def get_program(db: Session, classification: str, restriction: Optional[str]) -> str:
@@ -79,11 +93,11 @@ def get_program(db: Session, classification: str, restriction: Optional[str]) ->
     )
     if rule:
         return rule.program_code
-    if restriction_key == "KNEE_PAIN":
-        return "3_day_full_body"
-    if "low_muscle" in classification:
-        return "3_day_full_body"
-    return "4_day_split"
+    raise UnsupportedCase(
+        stage="program",
+        reason="program_rule_missing",
+        details={"classification": classification, "restriction": restriction},
+    )
 
 
 def get_or_create_user(db: Session, user_id: Optional[int], username: Optional[str]) -> User:
@@ -102,7 +116,8 @@ def get_or_create_user(db: Session, user_id: Optional[int], username: Optional[s
         user = User(
             username=username_key,
             email=f"{username_key}@example.com",
-            hashed_password="default_password",
+            hashed_password=get_password_hash(secrets.token_urlsafe(24)),
+            role="CLIENT",
             is_active=True,
         )
         db.add(user)
@@ -116,7 +131,8 @@ def get_or_create_user(db: Session, user_id: Optional[int], username: Optional[s
     user = User(
         username="anonymous",
         email="anonymous@example.com",
-        hashed_password="default_password",
+        hashed_password=get_password_hash(secrets.token_urlsafe(24)),
+        role="CLIENT",
         is_active=True,
     )
     db.add(user)
@@ -149,7 +165,15 @@ def create_episode(db: Session, assessment: Assessment, program: str) -> Episode
     return episode
 
 
-def create_outcome(db: Session, episode: Episode, classification: str, recommendation: str, program: str) -> Outcome:
+def create_outcome(
+    db: Session,
+    episode: Episode,
+    classification: str,
+    recommendation: str,
+    program: str,
+    goal: str,
+    restriction: Optional[str],
+) -> Outcome:
     outcome = Outcome(
         episode_id=episode.id,
         name="generated_episode",
@@ -157,6 +181,8 @@ def create_outcome(db: Session, episode: Episode, classification: str, recommend
             "classification": classification,
             "recommendation": recommendation,
             "program": program,
+            "goal": goal,
+            "restriction": restriction,
         },
         score=1.0,
     )
@@ -164,12 +190,28 @@ def create_outcome(db: Session, episode: Episode, classification: str, recommend
     return outcome
 
 
+def log_episode_failure(db: Session, episode: Episode, stage: str, reason: str, details: Optional[dict] = None) -> None:
+    failure = EpisodeFailure(
+        episode_id=episode.id,
+        stage=stage,
+        reason=reason,
+        details=details,
+    )
+    db.add(failure)
+
+
 def generate_workout_details(db: Session, program: str, goal: str, restriction: Optional[str]) -> dict:
     program_key = program.lower().strip()
     restriction_key = restriction.upper().strip() if restriction else None
-    program_obj = db.query(Program).filter(Program.code == program_key).first()
-    substitution_map = {}
+    program_obj = db.query(Program).filter(func.lower(Program.code) == program_key).first()
+    if not program_obj:
+        raise UnsupportedCase(
+            stage="program",
+            reason="program_not_found",
+            details={"program": program},
+        )
 
+    substitution_map = {}
     if restriction_key:
         restriction_obj = db.query(Restriction).filter(Restriction.code == restriction_key).first()
         if restriction_obj:
@@ -177,44 +219,34 @@ def generate_workout_details(db: Session, program: str, goal: str, restriction: 
                 substitution_map[substitution.exercise_id] = substitution.substitute_exercise
 
     workouts = []
-    if program_obj:
-        mappings = (
-            db.query(ProgramExercise)
-            .options(joinedload(ProgramExercise.exercise))
-            .filter(ProgramExercise.program_id == program_obj.id)
-            .order_by(ProgramExercise.day, ProgramExercise.sequence)
-            .all()
-        )
+    mappings = (
+        db.query(ProgramExercise)
+        .options(joinedload(ProgramExercise.exercise))
+        .filter(ProgramExercise.program_id == program_obj.id)
+        .order_by(ProgramExercise.day, ProgramExercise.sequence)
+        .all()
+    )
 
-        grouped = {}
-        for mapping in mappings:
-            exercise = substitution_map.get(mapping.exercise_id, mapping.exercise)
-            movement = {
-                "name": exercise.name,
-                "sets": mapping.sets,
-                "reps": mapping.reps,
-            }
-            if mapping.duration:
-                movement["duration"] = mapping.duration
-            if mapping.notes:
-                movement["notes"] = mapping.notes
+    grouped = {}
+    for mapping in mappings:
+        exercise = substitution_map.get(mapping.exercise_id, mapping.exercise)
+        movement = {
+            "name": exercise.name,
+            "sets": mapping.sets,
+            "reps": mapping.reps,
+        }
+        if mapping.duration:
+            movement["duration"] = mapping.duration
+        if mapping.notes:
+            movement["notes"] = mapping.notes
 
-            if mapping.day:
-                grouped.setdefault(mapping.day, []).append(movement)
-            else:
-                workouts.append(movement)
+        if mapping.day:
+            grouped.setdefault(mapping.day, []).append(movement)
+        else:
+            workouts.append(movement)
 
-        if grouped:
-            workouts = [{"day": day, "movements": movements} for day, movements in grouped.items()]
-
-    if not workouts:
-        workouts = [
-            {"name": "Goblet Squat", "sets": 3, "reps": "10-15"},
-            {"name": "Push-up", "sets": 3, "reps": "12-20"},
-            {"name": "Dumbbell Row", "sets": 3, "reps": "10-15"},
-            {"name": "Lunge", "sets": 3, "reps": "10-12"},
-            {"name": "Plank", "sets": 3, "duration": "30s"},
-        ]
+    if grouped:
+        workouts = [{"day": day, "movements": movements} for day, movements in grouped.items()]
 
     return {
         "program": program,
@@ -274,17 +306,22 @@ async def generate_workout(request: GenerateWorkoutRequest, db: Session = Depend
     summary="Generate an episode recommendation",
 )
 async def generate_episode(request: GenerateEpisodeRequest, db: Session = Depends(get_db)):
-    classification = get_classification(db, request.pbf, request.smm)
-    recommendation = get_recommendation(db, classification, request.goal)
-    program = get_program(db, classification, request.restriction)
-
     user = get_or_create_user(db, request.user_id, request.username)
     assessment_title = request.assessment_title or f"{request.goal.capitalize()} Assessment"
     assessment_description = f"Generated assessment for {user.username}"
     assessment = create_assessment(db, user, assessment_title, assessment_description)
-    episode = create_episode(db, assessment, program)
-    create_outcome(db, episode, classification, recommendation, program)
+    episode = create_episode(db, assessment, UNSUPPORTED_CASE)
 
+    try:
+        classification = get_classification(db, request.pbf, request.smm)
+        recommendation = get_recommendation(db, classification, request.goal)
+        program = get_program(db, classification, request.restriction)
+    except UnsupportedCase as exc:
+        log_episode_failure(db, episode, stage=exc.stage, reason=exc.reason, details=exc.details)
+        db.commit()
+        raise
+
+    create_outcome(db, episode, classification, recommendation, program, request.goal, request.restriction)
     db.commit()
     db.refresh(episode)
     db.refresh(assessment)

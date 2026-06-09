@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS users (
     username TEXT NOT NULL UNIQUE,
     email TEXT UNIQUE,
     hashed_password TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'CLIENT',
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -40,6 +41,15 @@ CREATE TABLE IF NOT EXISTS outcomes (
     score NUMERIC,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS episode_failures (
+    id BIGSERIAL PRIMARY KEY,
+    episode_id BIGINT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+    stage TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    details JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_assessments_user_id ON assessments(user_id);
