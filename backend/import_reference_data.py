@@ -5,12 +5,13 @@ import pandas as pd
 from sqlalchemy.orm import Session
 
 from .database import SessionLocal
-from .models import Exercise, Program, ProgramExercise
+from .models import Exercise, Program, ProgramExercise, RecommendationRule
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 PROGRAM_FILE = BASE_DIR / "IBLITZ_216_Program_Library.xlsx"
 EXERCISE_FILE = BASE_DIR / "IBLITZ_Master_Exercise_Database_vNext.xlsx"
 PROGRAM_EXERCISE_FILE = BASE_DIR / "IBLITZ_Program_Exercises_Expanded.xlsx"
+DECISION_ENGINE_FILE = BASE_DIR / "IBLITZ_Decision_Engine_V15.xlsx"
 
 
 def normalize_code(value: str) -> str:
@@ -140,6 +141,46 @@ def main():
         print("Program and exercise import completed.")
     finally:
         db.close()
+
+
+def import_recommendation_rules(db: Session):
+    if not DECISION_ENGINE_FILE.exists():
+        raise FileNotFoundError(f"Decision engine file not found: {DECISION_ENGINE_FILE}")
+
+    for sheet_name, goal_col, route_col in [
+        ("Recommendation_Routing_Matrix", "Goal", "Route"),
+        ("Recommendation_Rule_Library", None, "Pathway"),
+    ]:
+        rows = pd.read_excel(DECISION_ENGINE_FILE, sheet_name=sheet_name, dtype=str)
+        for _, row in rows.iterrows():
+            classification = str(row.get("Classification", "")).strip()
+            recommendation = str(row.get(route_col, "")).strip()
+            if not classification or not recommendation:
+                continue
+            goal_key = None
+            if goal_col:
+                goal_key = str(row.get(goal_col, "")).strip() or None
+
+            existing = (
+                db.query(RecommendationRule)
+                .filter(RecommendationRule.classification == classification)
+                .filter(RecommendationRule.goal_key == goal_key)
+                .filter(RecommendationRule.recommendation == recommendation)
+                .first()
+            )
+            if existing:
+                continue
+
+            db.add(
+                RecommendationRule(
+                    classification=classification,
+                    goal_key=goal_key,
+                    recommendation=recommendation,
+                    priority=100,
+                    active=True,
+                )
+            )
+    db.commit()
 
 
 if __name__ == "__main__":
