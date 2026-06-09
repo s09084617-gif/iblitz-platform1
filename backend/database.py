@@ -7,7 +7,7 @@ DATABASE_URL = os.getenv(
     "DATABASE_URL",
     os.getenv(
         "DB_URL",
-        "postgresql://iblitz:iblitz123@172.17.0.2:5432/iblitz",
+        "postgresql://iblitz:iblitz123@localhost:5432/iblitz",
     ),
 )
 
