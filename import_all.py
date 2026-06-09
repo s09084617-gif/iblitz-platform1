@@ -1,5 +1,10 @@
 from backend.database import SessionLocal
-from backend.import_reference_data import import_programs, import_exercises, import_program_exercises
+from backend.import_reference_data import (
+    import_programs,
+    import_exercises,
+    import_program_exercises,
+    import_restrictions,
+)
 
 
 def main() -> None:
@@ -11,6 +16,8 @@ def main() -> None:
         import_exercises(db)
         print("Importing program exercise mappings...")
         import_program_exercises(db)
+        print("Importing restrictions and substitutions...")
+        import_restrictions(db)
         print("All imports completed successfully.")
     finally:
         db.close()
