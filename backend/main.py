@@ -1,11 +1,11 @@
-from fastapi import Depends, FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi import Depends, FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .auth import get_current_admin_user, router as auth_router
 from .database import Base, engine, get_db
-from .generate_episode_api import router as engine_router
+from .generate_episode_api import UnsupportedCase, router as engine_router
 from .models import Assessment, Episode, EpisodeFailure, Outcome, User, Workout
 
 try:
@@ -16,6 +16,19 @@ except Exception as exc:
 app = FastAPI()
 app.include_router(auth_router)
 app.include_router(engine_router, prefix="/engine", tags=["engine"])
+
+
+@app.exception_handler(UnsupportedCase)
+async def unsupported_case_handler(request: Request, exc: UnsupportedCase):
+    return JSONResponse(
+        status_code=422,
+        content={
+            "status": "unsupported_case",
+            "stage": exc.stage,
+            "reason": exc.reason,
+            "details": exc.details,
+        },
+    )
 
 
 @app.get("/")

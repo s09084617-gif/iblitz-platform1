@@ -35,7 +35,14 @@ from .schemas import (
 router = APIRouter()
 
 
-def get_classification(db: Session, pbf: float, smm: str) -> Tuple[str, bool]:
+class UnsupportedCase(Exception):
+    def __init__(self, stage: str, reason: str, details: Optional[dict] = None):
+        self.stage = stage
+        self.reason = reason
+        self.details = details or {}
+
+
+def get_classification(db: Session, pbf: float, smm: str) -> str:
     smm_key = smm.lower().strip()
     rule = (
         db.query(ClassificationRule)
@@ -47,11 +54,15 @@ def get_classification(db: Session, pbf: float, smm: str) -> Tuple[str, bool]:
         .first()
     )
     if rule:
-        return rule.classification, True
-    return UNSUPPORTED_CASE, False
+        return rule.classification
+    raise UnsupportedCase(
+        stage="classification",
+        reason="classification_rule_missing",
+        details={"pbf": pbf, "smm": smm},
+    )
 
 
-def get_recommendation(db: Session, classification: str, goal: str) -> Tuple[str, bool]:
+def get_recommendation(db: Session, classification: str, goal: str) -> str:
     goal_key = goal.lower().strip()
     rule = (
         db.query(RecommendationRule)
@@ -62,11 +73,15 @@ def get_recommendation(db: Session, classification: str, goal: str) -> Tuple[str
         .first()
     )
     if rule:
-        return rule.recommendation, True
-    return UNSUPPORTED_CASE, False
+        return rule.recommendation
+    raise UnsupportedCase(
+        stage="recommendation",
+        reason="recommendation_rule_missing",
+        details={"classification": classification, "goal": goal},
+    )
 
 
-def get_program(db: Session, classification: str, restriction: Optional[str]) -> Tuple[str, bool]:
+def get_program(db: Session, classification: str, restriction: Optional[str]) -> str:
     restriction_key = restriction.upper().strip() if restriction else None
     rule = (
         db.query(ProgramRule)
@@ -77,8 +92,12 @@ def get_program(db: Session, classification: str, restriction: Optional[str]) ->
         .first()
     )
     if rule:
-        return rule.program_code, True
-    return UNSUPPORTED_CASE, False
+        return rule.program_code
+    raise UnsupportedCase(
+        stage="program",
+        reason="program_rule_missing",
+        details={"classification": classification, "restriction": restriction},
+    )
 
 
 def get_or_create_user(db: Session, user_id: Optional[int], username: Optional[str]) -> User:
@@ -185,8 +204,14 @@ def generate_workout_details(db: Session, program: str, goal: str, restriction: 
     program_key = program.lower().strip()
     restriction_key = restriction.upper().strip() if restriction else None
     program_obj = db.query(Program).filter(func.lower(Program.code) == program_key).first()
-    substitution_map = {}
+    if not program_obj:
+        raise UnsupportedCase(
+            stage="program",
+            reason="program_not_found",
+            details={"program": program},
+        )
 
+    substitution_map = {}
     if restriction_key:
         restriction_obj = db.query(Restriction).filter(Restriction.code == restriction_key).first()
         if restriction_obj:
@@ -194,35 +219,34 @@ def generate_workout_details(db: Session, program: str, goal: str, restriction: 
                 substitution_map[substitution.exercise_id] = substitution.substitute_exercise
 
     workouts = []
-    if program_obj:
-        mappings = (
-            db.query(ProgramExercise)
-            .options(joinedload(ProgramExercise.exercise))
-            .filter(ProgramExercise.program_id == program_obj.id)
-            .order_by(ProgramExercise.day, ProgramExercise.sequence)
-            .all()
-        )
+    mappings = (
+        db.query(ProgramExercise)
+        .options(joinedload(ProgramExercise.exercise))
+        .filter(ProgramExercise.program_id == program_obj.id)
+        .order_by(ProgramExercise.day, ProgramExercise.sequence)
+        .all()
+    )
 
-        grouped = {}
-        for mapping in mappings:
-            exercise = substitution_map.get(mapping.exercise_id, mapping.exercise)
-            movement = {
-                "name": exercise.name,
-                "sets": mapping.sets,
-                "reps": mapping.reps,
-            }
-            if mapping.duration:
-                movement["duration"] = mapping.duration
-            if mapping.notes:
-                movement["notes"] = mapping.notes
+    grouped = {}
+    for mapping in mappings:
+        exercise = substitution_map.get(mapping.exercise_id, mapping.exercise)
+        movement = {
+            "name": exercise.name,
+            "sets": mapping.sets,
+            "reps": mapping.reps,
+        }
+        if mapping.duration:
+            movement["duration"] = mapping.duration
+        if mapping.notes:
+            movement["notes"] = mapping.notes
 
-            if mapping.day:
-                grouped.setdefault(mapping.day, []).append(movement)
-            else:
-                workouts.append(movement)
+        if mapping.day:
+            grouped.setdefault(mapping.day, []).append(movement)
+        else:
+            workouts.append(movement)
 
-        if grouped:
-            workouts = [{"day": day, "movements": movements} for day, movements in grouped.items()]
+    if grouped:
+        workouts = [{"day": day, "movements": movements} for day, movements in grouped.items()]
 
     return {
         "program": program,
@@ -282,42 +306,22 @@ async def generate_workout(request: GenerateWorkoutRequest, db: Session = Depend
     summary="Generate an episode recommendation",
 )
 async def generate_episode(request: GenerateEpisodeRequest, db: Session = Depends(get_db)):
-    classification, classification_matched = get_classification(db, request.pbf, request.smm)
-    recommendation, recommendation_matched = get_recommendation(db, classification, request.goal)
-    program, program_matched = get_program(db, classification, request.restriction)
-
     user = get_or_create_user(db, request.user_id, request.username)
     assessment_title = request.assessment_title or f"{request.goal.capitalize()} Assessment"
     assessment_description = f"Generated assessment for {user.username}"
     assessment = create_assessment(db, user, assessment_title, assessment_description)
-    episode = create_episode(db, assessment, program)
+    episode = create_episode(db, assessment, UNSUPPORTED_CASE)
+
+    try:
+        classification = get_classification(db, request.pbf, request.smm)
+        recommendation = get_recommendation(db, classification, request.goal)
+        program = get_program(db, classification, request.restriction)
+    except UnsupportedCase as exc:
+        log_episode_failure(db, episode, stage=exc.stage, reason=exc.reason, details=exc.details)
+        db.commit()
+        raise
+
     create_outcome(db, episode, classification, recommendation, program, request.goal, request.restriction)
-
-    if not classification_matched:
-        log_episode_failure(
-            db,
-            episode,
-            stage="classification",
-            reason="classification_rule_missing",
-            details={"pbf": request.pbf, "smm": request.smm},
-        )
-    if not recommendation_matched:
-        log_episode_failure(
-            db,
-            episode,
-            stage="recommendation",
-            reason="recommendation_rule_missing",
-            details={"classification": classification, "goal": request.goal},
-        )
-    if not program_matched:
-        log_episode_failure(
-            db,
-            episode,
-            stage="program",
-            reason="program_rule_missing",
-            details={"classification": classification, "restriction": request.restriction},
-        )
-
     db.commit()
     db.refresh(episode)
     db.refresh(assessment)
