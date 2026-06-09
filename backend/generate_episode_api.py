@@ -22,6 +22,8 @@ from .models import (
     ClassificationRule,
     ProgramRule,
 )
+
+UNSUPPORTED_CASE = "unsupported_case"
 from .schemas import (
     EpisodeResponse,
     GenerateEpisodeRequest,
@@ -46,7 +48,7 @@ def get_classification(db: Session, pbf: float, smm: str) -> Tuple[str, bool]:
     )
     if rule:
         return rule.classification, True
-    return "normal", False
+    return UNSUPPORTED_CASE, False
 
 
 def get_recommendation(db: Session, classification: str, goal: str) -> Tuple[str, bool]:
@@ -61,12 +63,7 @@ def get_recommendation(db: Session, classification: str, goal: str) -> Tuple[str
     )
     if rule:
         return rule.recommendation, True
-    fallback = {
-        "fat_loss": "fat_loss",
-        "muscle_gain": "muscle_gain",
-        "maintenance": "maintenance",
-    }.get(goal_key, "general_fitness")
-    return fallback, False
+    return UNSUPPORTED_CASE, False
 
 
 def get_program(db: Session, classification: str, restriction: Optional[str]) -> Tuple[str, bool]:
@@ -81,10 +78,7 @@ def get_program(db: Session, classification: str, restriction: Optional[str]) ->
     )
     if rule:
         return rule.program_code, True
-    fallback = "4_day_split"
-    if restriction_key == "KNEE_PAIN" or "low_muscle" in classification:
-        fallback = "3_day_full_body"
-    return fallback, False
+    return UNSUPPORTED_CASE, False
 
 
 def get_or_create_user(db: Session, user_id: Optional[int], username: Optional[str]) -> User:
@@ -229,15 +223,6 @@ def generate_workout_details(db: Session, program: str, goal: str, restriction: 
 
         if grouped:
             workouts = [{"day": day, "movements": movements} for day, movements in grouped.items()]
-
-    if not workouts:
-        workouts = [
-            {"name": "Goblet Squat", "sets": 3, "reps": "10-15"},
-            {"name": "Push-up", "sets": 3, "reps": "12-20"},
-            {"name": "Dumbbell Row", "sets": 3, "reps": "10-15"},
-            {"name": "Lunge", "sets": 3, "reps": "10-12"},
-            {"name": "Plank", "sets": 3, "duration": "30s"},
-        ]
 
     return {
         "program": program,

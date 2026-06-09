@@ -15,6 +15,10 @@ A backend for the iblitz recommendation and workout system.
 - `backend/reset_and_seed_canonical_assessments.sh` — reset and reseed canonical test data
 - `backend/seed_canonical_assessments.sh` — create 10 test users, episodes, outcomes
 - `backend/run_dev.sh` — local FastAPI startup helper
+- `import_programs.py` — import programs from `IBLITZ_216_Program_Library.xlsx`
+- `import_exercises.py` — import exercises from `IBLITZ_Master_Exercise_Database_vNext.xlsx`
+- `import_mappings.py` — import program/exercise mappings from `IBLITZ_Program_Exercises_Expanded.xlsx`
+- `import_all.py` — run all program, exercise, and mapping imports in sequence
 
 ## Requirements
 
