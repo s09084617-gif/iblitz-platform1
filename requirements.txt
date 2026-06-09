@@ -1,4 +1,8 @@
 fastapi==0.111.1
-uvicorn==0.24.1
+uvicorn==0.24.0
 sqlalchemy==2.0.30
 psycopg2-binary==2.9.10
+passlib[bcrypt]==1.7.4
+python-jose[cryptography]==3.5.0
+pandas==3.0.3
+openpyxl==3.1.5

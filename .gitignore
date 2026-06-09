@@ -7,3 +7,6 @@ venv/
 .DS_Store
 *.sqlite3
 *.db
+
+.venv
+.vscode

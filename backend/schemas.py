@@ -22,6 +22,34 @@ class GenerateEpisodeResponse(BaseModel):
     assessment_id: Optional[int] = None
 
 
+class UserCreate(BaseModel):
+    username: str
+    email: str
+    password: str
+    role: Optional[str] = "CLIENT"
+
+
+class UserRead(BaseModel):
+    id: int
+    username: str
+    email: str
+    role: str
+    is_active: bool
+
+    class Config:
+        from_attributes = True
+
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+
+class TokenData(BaseModel):
+    username: Optional[str] = None
+    role: Optional[str] = None
+
+
 class GenerateWorkoutRequest(BaseModel):
     program: str
     goal: str

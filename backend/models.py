@@ -24,6 +24,7 @@ class User(Base):
     username = Column(Text, unique=True, nullable=False)
     email = Column(Text, unique=True)
     hashed_password = Column(Text, nullable=False)
+    role = Column(Text, nullable=False, default="CLIENT")
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -74,6 +75,17 @@ class Outcome(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     episode = relationship("Episode", back_populates="outcomes")
+
+
+class EpisodeFailure(Base):
+    __tablename__ = "episode_failures"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+    episode_id = Column(BigInteger, ForeignKey("episodes.id"), nullable=False)
+    stage = Column(Text, nullable=False)
+    reason = Column(Text, nullable=False)
+    details = Column(JSON)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class Workout(Base):

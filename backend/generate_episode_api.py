@@ -1,14 +1,17 @@
+import secrets
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
 
+from .auth import get_password_hash
 from .database import get_db
 from .models import (
     Assessment,
     Episode,
+    EpisodeFailure,
     Outcome,
     Program,
     ProgramExercise,
@@ -30,7 +33,7 @@ from .schemas import (
 router = APIRouter()
 
 
-def get_classification(db: Session, pbf: float, smm: str) -> str:
+def get_classification(db: Session, pbf: float, smm: str) -> Tuple[str, bool]:
     smm_key = smm.lower().strip()
     rule = (
         db.query(ClassificationRule)
@@ -42,11 +45,11 @@ def get_classification(db: Session, pbf: float, smm: str) -> str:
         .first()
     )
     if rule:
-        return rule.classification
-    return "normal"
+        return rule.classification, True
+    return "normal", False
 
 
-def get_recommendation(db: Session, classification: str, goal: str) -> str:
+def get_recommendation(db: Session, classification: str, goal: str) -> Tuple[str, bool]:
     goal_key = goal.lower().strip()
     rule = (
         db.query(RecommendationRule)
@@ -57,17 +60,16 @@ def get_recommendation(db: Session, classification: str, goal: str) -> str:
         .first()
     )
     if rule:
-        return rule.recommendation
-    if goal_key == "fat_loss":
-        return "fat_loss"
-    if goal_key == "muscle_gain":
-        return "muscle_gain"
-    if goal_key == "maintenance":
-        return "maintenance"
-    return "general_fitness"
+        return rule.recommendation, True
+    fallback = {
+        "fat_loss": "fat_loss",
+        "muscle_gain": "muscle_gain",
+        "maintenance": "maintenance",
+    }.get(goal_key, "general_fitness")
+    return fallback, False
 
 
-def get_program(db: Session, classification: str, restriction: Optional[str]) -> str:
+def get_program(db: Session, classification: str, restriction: Optional[str]) -> Tuple[str, bool]:
     restriction_key = restriction.upper().strip() if restriction else None
     rule = (
         db.query(ProgramRule)
@@ -78,12 +80,11 @@ def get_program(db: Session, classification: str, restriction: Optional[str]) ->
         .first()
     )
     if rule:
-        return rule.program_code
-    if restriction_key == "KNEE_PAIN":
-        return "3_day_full_body"
-    if "low_muscle" in classification:
-        return "3_day_full_body"
-    return "4_day_split"
+        return rule.program_code, True
+    fallback = "4_day_split"
+    if restriction_key == "KNEE_PAIN" or "low_muscle" in classification:
+        fallback = "3_day_full_body"
+    return fallback, False
 
 
 def get_or_create_user(db: Session, user_id: Optional[int], username: Optional[str]) -> User:
@@ -102,7 +103,8 @@ def get_or_create_user(db: Session, user_id: Optional[int], username: Optional[s
         user = User(
             username=username_key,
             email=f"{username_key}@example.com",
-            hashed_password="default_password",
+            hashed_password=get_password_hash(secrets.token_urlsafe(24)),
+            role="CLIENT",
             is_active=True,
         )
         db.add(user)
@@ -116,7 +118,8 @@ def get_or_create_user(db: Session, user_id: Optional[int], username: Optional[s
     user = User(
         username="anonymous",
         email="anonymous@example.com",
-        hashed_password="default_password",
+        hashed_password=get_password_hash(secrets.token_urlsafe(24)),
+        role="CLIENT",
         is_active=True,
     )
     db.add(user)
@@ -149,7 +152,15 @@ def create_episode(db: Session, assessment: Assessment, program: str) -> Episode
     return episode
 
 
-def create_outcome(db: Session, episode: Episode, classification: str, recommendation: str, program: str) -> Outcome:
+def create_outcome(
+    db: Session,
+    episode: Episode,
+    classification: str,
+    recommendation: str,
+    program: str,
+    goal: str,
+    restriction: Optional[str],
+) -> Outcome:
     outcome = Outcome(
         episode_id=episode.id,
         name="generated_episode",
@@ -157,6 +168,8 @@ def create_outcome(db: Session, episode: Episode, classification: str, recommend
             "classification": classification,
             "recommendation": recommendation,
             "program": program,
+            "goal": goal,
+            "restriction": restriction,
         },
         score=1.0,
     )
@@ -164,10 +177,20 @@ def create_outcome(db: Session, episode: Episode, classification: str, recommend
     return outcome
 
 
+def log_episode_failure(db: Session, episode: Episode, stage: str, reason: str, details: Optional[dict] = None) -> None:
+    failure = EpisodeFailure(
+        episode_id=episode.id,
+        stage=stage,
+        reason=reason,
+        details=details,
+    )
+    db.add(failure)
+
+
 def generate_workout_details(db: Session, program: str, goal: str, restriction: Optional[str]) -> dict:
     program_key = program.lower().strip()
     restriction_key = restriction.upper().strip() if restriction else None
-    program_obj = db.query(Program).filter(Program.code == program_key).first()
+    program_obj = db.query(Program).filter(func.lower(Program.code) == program_key).first()
     substitution_map = {}
 
     if restriction_key:
@@ -274,16 +297,41 @@ async def generate_workout(request: GenerateWorkoutRequest, db: Session = Depend
     summary="Generate an episode recommendation",
 )
 async def generate_episode(request: GenerateEpisodeRequest, db: Session = Depends(get_db)):
-    classification = get_classification(db, request.pbf, request.smm)
-    recommendation = get_recommendation(db, classification, request.goal)
-    program = get_program(db, classification, request.restriction)
+    classification, classification_matched = get_classification(db, request.pbf, request.smm)
+    recommendation, recommendation_matched = get_recommendation(db, classification, request.goal)
+    program, program_matched = get_program(db, classification, request.restriction)
 
     user = get_or_create_user(db, request.user_id, request.username)
     assessment_title = request.assessment_title or f"{request.goal.capitalize()} Assessment"
     assessment_description = f"Generated assessment for {user.username}"
     assessment = create_assessment(db, user, assessment_title, assessment_description)
     episode = create_episode(db, assessment, program)
-    create_outcome(db, episode, classification, recommendation, program)
+    create_outcome(db, episode, classification, recommendation, program, request.goal, request.restriction)
+
+    if not classification_matched:
+        log_episode_failure(
+            db,
+            episode,
+            stage="classification",
+            reason="classification_rule_missing",
+            details={"pbf": request.pbf, "smm": request.smm},
+        )
+    if not recommendation_matched:
+        log_episode_failure(
+            db,
+            episode,
+            stage="recommendation",
+            reason="recommendation_rule_missing",
+            details={"classification": classification, "goal": request.goal},
+        )
+    if not program_matched:
+        log_episode_failure(
+            db,
+            episode,
+            stage="program",
+            reason="program_rule_missing",
+            details={"classification": classification, "restriction": request.restriction},
+        )
 
     db.commit()
     db.refresh(episode)
